@@ -24,3 +24,4 @@ scripts/.deploy-host
 # 运营资料（邀请码、账号）和项目状态，不进公开仓库
 运营/
 CLAUDE.md
+账号与积分支付规划.md
