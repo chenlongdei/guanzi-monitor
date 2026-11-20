@@ -1,0 +1,20 @@
+# 依赖与构建缓存
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+backend/dist/
+web/tsconfig.tsbuildinfo
+.DS_Store
+
+# 私人资料：方案、规划、接口探测样本（含真实数据），不进仓库
+方案.md
+分发规划.md
+probe/
+
+# 数据和配置
+*.db
+*.db-*
+config.json
+.env
+scripts/.private-patterns
