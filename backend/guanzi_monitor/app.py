@@ -29,10 +29,14 @@ def _mark_interrupted():
 @app.on_event("startup")
 def _startup():
     if db.SERVER:
-        from . import auth
-        for uid in auth.active_user_ids():
+        from . import auth, secretbox
+        secretbox.check()
+        for uid in [u["id"] for u in auth.list_users()]:   # 含停用账号：它们的 Key 也要加密
             with db.as_user(uid):
                 _mark_interrupted()
+                n = db.encrypt_existing_secrets()
+                if n:
+                    print(f"[secretbox] 用户 {uid}：{n} 个 Key 已改为加密存储")
     else:
         _mark_interrupted()
     scheduler.start()
@@ -69,11 +73,22 @@ class AuthGate:
 app.add_middleware(AuthGate)
 
 
+@app.exception_handler(jobs.LimitError)
+def _limit_error(_req: Request, e: jobs.LimitError):
+    return JSONResponse({"detail": str(e)}, status_code=429)
+
+
 def _me(req: Request) -> dict:
     u = req.scope.get("state", {}).get("user")
     if not u:
         raise HTTPException(401, "请先登录")
     return u
+
+
+def _ip(req: Request) -> str:
+    """真实 IP：服务只监听 127.0.0.1，前面是 Caddy，取它加的 X-Forwarded-For 第一个。"""
+    xf = req.headers.get("x-forwarded-for") or ""
+    return xf.split(",")[0].strip() or (req.client.host if req.client else "")
 
 
 def _set_cookie(resp, tok: str):
@@ -93,7 +108,7 @@ def auth_me(req: Request):
 def auth_login(req: Request, d: dict = Body(...)):
     from . import auth
     try:
-        tok, u = auth.login(d.get("username", ""), d.get("password", ""), req.headers.get("user-agent", ""))
+        tok, u = auth.login(d.get("username", ""), d.get("password", ""), req.headers.get("user-agent", ""), _ip(req))
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     resp = JSONResponse({"user": u})
@@ -105,8 +120,8 @@ def auth_login(req: Request, d: dict = Body(...)):
 def auth_register(req: Request, d: dict = Body(...)):
     from . import auth
     try:
-        auth.register(d.get("username", ""), d.get("password", ""), d.get("code", ""))
-        tok, u = auth.login(d.get("username", ""), d.get("password", ""), req.headers.get("user-agent", ""))
+        auth.register(d.get("username", ""), d.get("password", ""), d.get("code", ""), _ip(req))
+        tok, u = auth.login(d.get("username", ""), d.get("password", ""), req.headers.get("user-agent", ""), _ip(req))
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     resp = JSONResponse({"user": u})
@@ -622,6 +637,18 @@ def list_monitors(kind: str = ""):
     return rows
 
 
+MAX_MONITORS = 20          # 网页版每人最多几个监控
+MIN_INTERVAL_HOURS = 6     # 最短间隔（和前端最小选项一致）
+MAX_MONITOR_ITEMS = 100    # 每次监控最多采多少条
+
+
+def _check_monitor(d: dict):
+    if "interval_hours" in d and float(d["interval_hours"] or 0) < MIN_INTERVAL_HOURS:
+        raise HTTPException(400, f"监控间隔最短 {MIN_INTERVAL_HOURS} 小时")
+    if "max_items" in d and int(d["max_items"] or 0) > MAX_MONITOR_ITEMS:
+        raise HTTPException(400, f"每次监控最多采 {MAX_MONITOR_ITEMS} 条")
+
+
 @app.post("/api/monitors")
 def create_monitor(d: dict = Body(...)):
     kind = d["kind"]
@@ -629,6 +656,10 @@ def create_monitor(d: dict = Body(...)):
     if kind == "blogger" and not target.isdigit():
         raise HTTPException(400, "博主监控要先把博主采集进库")
     ex = db.q1("SELECT * FROM monitors WHERE kind=? AND platform=? AND target=?", (kind, d["platform"], target))
+    if db.SERVER:
+        _check_monitor(d)
+        if not ex and db.q1("SELECT COUNT(*) n FROM monitors")["n"] >= MAX_MONITORS:
+            raise HTTPException(429, f"每个账号最多 {MAX_MONITORS} 个监控，先删掉不用的")
     if ex:
         db.x("UPDATE monitors SET enabled=1 WHERE id=?", (ex["id"],))
         return {"id": ex["id"], "existed": True}
@@ -642,6 +673,8 @@ def create_monitor(d: dict = Body(...)):
 
 @app.patch("/api/monitors/{mid}")
 def patch_monitor(mid: int, d: dict = Body(...)):
+    if db.SERVER:
+        _check_monitor(d)
     allowed = {"interval_hours", "auto_transcribe", "max_items", "enabled", "label", "params"}
     for k, v in d.items():
         if k in allowed:

@@ -1,9 +1,12 @@
 [project]
 name = "guanzi-monitor"
-version = "0.1.1"
+version = "0.1.2"
 description = "观自行深监控台：抖音 / 小红书 / 视频号 的单条、关键词、博主采集与监控"
 requires-python = ">=3.11"
 dependencies = ["fastapi>=0.115", "uvicorn>=0.30", "openpyxl>=3.1", "pillow>=10", "pillow-heif>=0.16", "anthropic>=2.11", "certifi>=2024.2"]
+
+[project.optional-dependencies]
+server = ["cryptography>=42"]   # 网页版加密 Key 用；本地版不需要
 
 [project.scripts]
 guanzi-monitor = "guanzi_monitor.cli:main"

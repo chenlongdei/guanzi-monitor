@@ -13,7 +13,7 @@ from pathlib import Path
 BOOT = Path(os.environ.get("GM_HOME") or os.environ.get("DEI_WB_HOME") or Path.home() / ".guanzi-monitor")
 BOOT_FILE = BOOT / "config.json"
 DEFAULT_DATA = Path.home() / "观自行深监控台"
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 # 网页版：GM_MODE=server 时要求登录，每个用户一个文件夹、一个数据库（天然隔离，不用改表结构）
 SERVER = os.environ.get("GM_MODE") == "server"
@@ -220,6 +220,9 @@ DEFAULT_SETTINGS = {
     "tikhub_token": "",
     "dashscope_api_key": "",
     "dashscope_model": "paraformer-v2",
+    # 百炼接口地址。2026-11 实测旧地址仍可用；阿里云新文档改成按业务空间的
+    # https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com ，旧地址停用时只改这里
+    "dashscope_base_url": "https://dashscope.aliyuncs.com",
     "dasheng_uid": "",
     "dasheng_key": "",
     "anthropic_api_key": "",
@@ -242,14 +245,36 @@ def get_settings() -> dict:
             s[r["key"]] = json.loads(r["value"])
         except Exception:
             s[r["key"]] = r["value"]
+    if SERVER:
+        from . import secretbox
+        for k in SECRET_KEYS:
+            s[k] = secretbox.decrypt(s.get(k) or "")
     return s
 
 
 def set_settings(d: dict):
     for k, v in d.items():
         if k in DEFAULT_SETTINGS:
+            if SERVER and k in SECRET_KEYS and isinstance(v, str):
+                from . import secretbox
+                v = secretbox.encrypt(v.strip())
             x("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
               (k, json.dumps(v, ensure_ascii=False)))
+
+
+def encrypt_existing_secrets() -> int:
+    """网页版启动时：把当前用户库里还是明文的 Key 改成密文。返回改了几个。"""
+    from . import secretbox
+    n = 0
+    for r in q(f"SELECT key, value FROM settings WHERE key IN ({','.join('?' * len(SECRET_KEYS))})", tuple(SECRET_KEYS)):
+        try:
+            v = json.loads(r["value"])
+        except Exception:
+            v = r["value"]
+        if isinstance(v, str) and v and not secretbox.is_encrypted(v):
+            x("UPDATE settings SET value=? WHERE key=?", (json.dumps(secretbox.encrypt(v)), r["key"]))
+            n += 1
+    return n
 
 
 def public_settings() -> dict:

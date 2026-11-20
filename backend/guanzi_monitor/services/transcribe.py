@@ -56,13 +56,17 @@ def _post(url, key, body=None, extra=None):
         raise TranscribeError(msg)
 
 
+def _base(s: dict) -> str:
+    return (s.get("dashscope_base_url") or "https://dashscope.aliyuncs.com").rstrip("/")
+
+
 def test_key(s: dict) -> dict:
     """提交一段官方示例音频（几秒，费用可忽略）验证 Key 能不能用 Paraformer。"""
     key = (s.get("dashscope_api_key") or "").strip()
     if not key:
         return {"ok": False, "msg": "没有填百炼 Key"}
     try:
-        _post("https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription", key,
+        _post(_base(s) + "/api/v1/services/audio/asr/transcription", key,
               {"model": s.get("dashscope_model") or "paraformer-v2",
                "input": {"file_urls": ["https://dashscope.oss-cn-beijing.aliyuncs.com/samples/audio/paraformer/hello_world_female2.wav"]},
                "parameters": {"channel_id": [0]}}, {"X-DashScope-Async": "enable"})
@@ -76,7 +80,7 @@ def paraformer(media_url: str, s: dict, max_wait=1800, log=None):
     key = (s.get("dashscope_api_key") or "").strip()
     if not key:
         raise TranscribeError("没有填阿里云百炼 Key（设置页，sk- 开头）")
-    base = "https://dashscope.aliyuncs.com"
+    base = _base(s)
     resp = _post(base + "/api/v1/services/audio/asr/transcription", key,
                  {"model": s.get("dashscope_model") or "paraformer-v2", "input": {"file_urls": [media_url]},
                   "parameters": {"channel_id": [0], "language_hints": ["zh", "en"]}},

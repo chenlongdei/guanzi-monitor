@@ -98,22 +98,54 @@ def list_invites():
                  ORDER BY i.created DESC""")
 
 
+# ---------- 防暴力尝试 ----------
+# 15 分钟内：同一 IP 登录失败 10 次、同一账号失败 20 次、同一 IP 注册失败 10 次（猜邀请码），就先挡住
+WINDOW = 15 * 60
+LIMITS = {"ip": 10, "user": 20, "reg": 10}
+_fails: dict[str, list[float]] = {}
+_flock = threading.Lock()
+
+
+def _keys(kind_vals: dict) -> list[str]:
+    return [f"{k}:{v}" for k, v in kind_vals.items() if v]
+
+
+def _throttle(kind_vals: dict):
+    now = time.time()
+    with _flock:
+        for key in _keys(kind_vals):
+            ts = [t for t in _fails.get(key, []) if now - t < WINDOW]
+            _fails[key] = ts
+            if len(ts) >= LIMITS[key.split(":", 1)[0]]:
+                raise AuthError("尝试次数太多，请 15 分钟后再试")
+
+
+def _failed(kind_vals: dict):
+    with _flock:
+        for key in _keys(kind_vals):
+            _fails.setdefault(key, []).append(time.time())
+        if len(_fails) > 5000:   # 防止内存被刷爆：清掉过期的
+            now = time.time()
+            for k in [k for k, v in _fails.items() if not v or now - v[-1] > WINDOW]:
+                del _fails[k]
+
+
 # ---------- 注册 / 登录 ----------
 USER_RE = re.compile(r"^[A-Za-z0-9_一-鿿]{2,20}$")
 
 
-def register(username: str, password: str, code: str) -> dict:
+def register(username: str, password: str, code: str, ip: str = "") -> dict:
     username, code = (username or "").strip(), (code or "").strip().upper()
+    _throttle({"reg": ip})
     if not USER_RE.match(username):
         raise AuthError("账号 2–20 位，只能用中文、字母、数字、下划线")
     if len(password or "") < 8:
         raise AuthError("密码至少 8 位")
     with _lock:
         inv = _q1("SELECT * FROM invites WHERE code=?", (code,))
-        if not inv:
-            raise AuthError("邀请码不对")
-        if inv["used_by"]:
-            raise AuthError("这个邀请码已经用过了")
+        if not inv or inv["used_by"]:
+            _failed({"reg": ip})
+            raise AuthError("邀请码不对" if not inv else "这个邀请码已经用过了")
         if _q1("SELECT id FROM users WHERE username=?", (username,)):
             raise AuthError("这个账号名已经有人用了")
         uid = _x("INSERT INTO users(username, pw_hash, is_admin, invite_code, created) VALUES(?,?,?,?,?)",
@@ -122,9 +154,12 @@ def register(username: str, password: str, code: str) -> dict:
     return get_user(uid)
 
 
-def login(username: str, password: str, ua: str = "") -> tuple[str, dict]:
+def login(username: str, password: str, ua: str = "", ip: str = "") -> tuple[str, dict]:
+    who = {"ip": ip, "user": (username or "").strip().lower()}
+    _throttle(who)
     u = _q1("SELECT * FROM users WHERE username=?", ((username or "").strip(),))
     if not u or not check_pw(password or "", u["pw_hash"]):
+        _failed(who)
         time.sleep(0.5)  # 拖慢暴力尝试
         raise AuthError("账号或密码不对")
     if u["disabled"]:

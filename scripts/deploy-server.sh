@@ -9,5 +9,5 @@ echo "→ 打包前端"; (cd web && npm run build >/dev/null)
 echo "→ 同步到 $HOST"
 rsync -az --delete --exclude venv --exclude .venv --exclude __pycache__ --exclude dist --exclude '*.pyc' backend/ "$HOST:/opt/guanzi-monitor/"
 echo "→ 重装并重启"
-ssh "$HOST" 'cd /opt/guanzi-monitor && venv/bin/pip install -q . && systemctl restart guanzi-monitor && sleep 3 && systemctl is-active guanzi-monitor && curl -s 127.0.0.1:8765/api/auth/me'
+ssh "$HOST" 'cd /opt/guanzi-monitor && venv/bin/pip install -q ".[server]" && systemctl restart guanzi-monitor && sleep 3 && systemctl is-active guanzi-monitor && curl -s 127.0.0.1:8765/api/auth/me'
 echo; echo "✓ 已发布（运行中的任务会被标成中断，监控到点会自动再跑）"

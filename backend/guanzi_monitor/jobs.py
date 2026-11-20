@@ -14,7 +14,14 @@ from .providers import PLATFORMS, ProviderError, get_provider
 from .services import links, store
 from .services.transcribe import PARAFORMER_CNY_PER_SEC, TranscribeError, transcribe_content
 
-POOL = ThreadPoolExecutor(max_workers=6 if db.SERVER else 3, thread_name_prefix="job")   # 同时跑的任务数（网页版所有人共用）
+# 网页版限额（本地版只有自己一个人，不限）
+GLOBAL_RUNNING = 6        # 全站同时跑的任务数
+USER_RUNNING = 2          # 每人同时跑几个，多出来的排队
+USER_QUEUE = 10           # 每人排队 + 运行中最多几个，再多直接拒绝
+MAX_ITEMS = 300           # 单个任务最多采多少条（和前端最大选项一致）
+MAX_IDS = 200             # 一次转写 / 刷新最多多少条
+
+POOL = ThreadPoolExecutor(max_workers=GLOBAL_RUNNING if db.SERVER else 3, thread_name_prefix="job")
 ENRICH_PARALLEL = 10                                                  # 单个任务里补详情的并发数
 TPOOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="asr")
 _cancel: set[tuple] = set()   # (用户, 任务 id)：网页版每个用户的任务 id 各自从 1 开始
@@ -69,10 +76,65 @@ class Job:
         db.x(f"UPDATE jobs SET {sets} WHERE id=?", (*kw.values(), self.id))
 
 
+class LimitError(Exception):
+    """超出网页版限额：接口返回 429，前端直接显示这句话。"""
+
+
+def _check_limits(kind: str, params: dict, monitor_id):
+    if kind in ("keyword", "blogger") and int(params.get("limit") or 0) > MAX_ITEMS:
+        raise LimitError(f"一次最多采 {MAX_ITEMS} 条，请把数量调小")
+    if kind in ("transcribe", "refresh") and len(params.get("content_ids") or []) > MAX_IDS:
+        raise LimitError(f"一次最多处理 {MAX_IDS} 条，请分批提交")
+    if monitor_id is None:   # 监控任务不占这个名额，否则手动任务多了监控就跑不了
+        uid = db.current_user()
+        with _slock:
+            n = len(_pending.get(uid, ())) + _running.get(uid, 0)
+        if n >= USER_QUEUE:
+            raise LimitError(f"你已经有 {n} 个任务在跑或排队，等前面的完成再提交")
+
+
+# 网页版公平排队：每人最多同时跑 USER_RUNNING 个，全站最多 GLOBAL_RUNNING 个；谁跑得少先轮到谁
+_slock = threading.Lock()
+_pending: dict = {}   # 用户 → [(上下文, 任务 id)]
+_running: dict = {}   # 用户 → 正在跑的数量
+
+
+def _pump():
+    """在 _slock 内调用：把能开跑的排队任务交给线程池。"""
+    while sum(_running.values()) < GLOBAL_RUNNING:
+        ready = [u for u, qd in _pending.items() if qd and _running.get(u, 0) < USER_RUNNING]
+        if not ready:
+            return
+        uid = min(ready, key=lambda u: _running.get(u, 0))
+        ctx, jid = _pending[uid].pop(0)
+        if not _pending[uid]:
+            del _pending[uid]
+        _running[uid] = _running.get(uid, 0) + 1
+        POOL.submit(ctx.run, _run_counted, uid, jid)
+
+
+def _run_counted(uid, jid: int):
+    try:
+        _run(jid)
+    finally:
+        with _slock:
+            _running[uid] -= 1
+            if not _running[uid]:
+                del _running[uid]
+            _pump()
+
+
 def create(kind: str, params: dict, title: str = "", platform: str | None = None, monitor_id: int | None = None) -> int:
+    if db.SERVER:
+        _check_limits(kind, params, monitor_id)
     jid = db.x("INSERT INTO jobs(kind, platform, title, params, status, created, monitor_id) VALUES(?,?,?,?,?,?,?)",
                (kind, platform, title, json.dumps(params, ensure_ascii=False), "queued", db.now(), monitor_id))
-    _submit(POOL, _run, jid)
+    if db.SERVER:
+        with _slock:
+            _pending.setdefault(db.current_user(), []).append((contextvars.copy_context(), jid))
+            _pump()
+    else:
+        _submit(POOL, _run, jid)
     return jid
 
 
