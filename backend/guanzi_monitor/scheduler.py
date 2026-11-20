@@ -33,6 +33,19 @@ def _loop():
 
 
 def tick():
+    if db.SERVER:
+        from . import auth
+        for uid in auth.active_user_ids():
+            with db.as_user(uid):
+                try:
+                    _tick_one()
+                except Exception as e:  # noqa
+                    print(f"[scheduler] user {uid}", repr(e))
+    else:
+        _tick_one()
+
+
+def _tick_one():
     t = db.now()
     for m in db.q("SELECT * FROM monitors WHERE enabled=1 AND (next_run IS NULL OR next_run<=?)", (t,)):
         running = db.q1("SELECT id FROM jobs WHERE monitor_id=? AND status IN ('queued','running')", (m["id"],))

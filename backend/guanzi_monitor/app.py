@@ -7,8 +7,8 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, jobs, scheduler
@@ -19,13 +19,155 @@ app = FastAPI(title="观自行深监控台")
 WEB = Path(os.environ.get("DEI_WB_WEB") or Path(__file__).parent / "web")
 
 
-@app.on_event("startup")
-def _startup():
+def _mark_interrupted():
     db.init()
     # 运行中被中断的任务标成中断
     db.x("UPDATE jobs SET status='interrupted', finished=? WHERE status IN ('queued','running')", (db.now(),))
     db.x("UPDATE contents SET transcript_status='failed', transcript_error='工作台重启，转写中断' WHERE transcript_status='running'")
+
+
+@app.on_event("startup")
+def _startup():
+    if db.SERVER:
+        from . import auth
+        for uid in auth.active_user_ids():
+            with db.as_user(uid):
+                _mark_interrupted()
+    else:
+        _mark_interrupted()
     scheduler.start()
+
+
+# ---------------- 网页版：登录 ----------------
+class AuthGate:
+    """纯 ASGI 中间件：网页版下 /api 必须登录（Cookie 或 Bearer 令牌），并把当前用户放进上下文。"""
+    OPEN = ("/api/auth/login", "/api/auth/register", "/api/auth/me", "/api/auth/logout")
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if not db.SERVER or scope["type"] != "http" or not scope["path"].startswith("/api/"):
+            return await self.inner(scope, receive, send)
+        from . import auth
+        req = Request(scope)
+        u = auth.user_from_session(req.cookies.get(auth.COOKIE))
+        if not u:
+            h = req.headers.get("authorization") or ""
+            if h.lower().startswith("bearer "):
+                u = auth.user_from_api_token(h[7:].strip())
+        if not u and scope["path"] not in self.OPEN:
+            return await JSONResponse({"detail": "请先登录"}, status_code=401)(scope, receive, send)
+        scope.setdefault("state", {})["user"] = u
+        tok = db.set_user(u["id"] if u else None)
+        try:
+            await self.inner(scope, receive, send)
+        finally:
+            db._uid.reset(tok)
+
+
+app.add_middleware(AuthGate)
+
+
+def _me(req: Request) -> dict:
+    u = req.scope.get("state", {}).get("user")
+    if not u:
+        raise HTTPException(401, "请先登录")
+    return u
+
+
+def _set_cookie(resp, tok: str):
+    from . import auth
+    resp.set_cookie(auth.COOKIE, tok, max_age=auth.SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                    secure=os.environ.get("GM_INSECURE_COOKIE") != "1", path="/")
+
+
+@app.get("/api/auth/me")
+def auth_me(req: Request):
+    if not db.SERVER:
+        return {"server": False, "user": None}
+    return {"server": True, "user": req.scope.get("state", {}).get("user")}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: Request, d: dict = Body(...)):
+    from . import auth
+    try:
+        tok, u = auth.login(d.get("username", ""), d.get("password", ""), req.headers.get("user-agent", ""))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"user": u})
+    _set_cookie(resp, tok)
+    return resp
+
+
+@app.post("/api/auth/register")
+def auth_register(req: Request, d: dict = Body(...)):
+    from . import auth
+    try:
+        auth.register(d.get("username", ""), d.get("password", ""), d.get("code", ""))
+        tok, u = auth.login(d.get("username", ""), d.get("password", ""), req.headers.get("user-agent", ""))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"user": u})
+    _set_cookie(resp, tok)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout(req: Request):
+    from . import auth
+    t = req.cookies.get(auth.COOKIE)
+    if t:
+        auth.logout(t)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/password")
+def auth_password(req: Request, d: dict = Body(...)):
+    from . import auth
+    try:
+        auth.change_password(_me(req)["id"], d.get("old", ""), d.get("new", ""))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/auth/token")
+def auth_token(req: Request):
+    """生成给 Claude 等 Agent 用的访问令牌（只显示这一次）。"""
+    from . import auth
+    return {"token": auth.new_api_token(_me(req)["id"])}
+
+
+@app.delete("/api/auth/token")
+def auth_token_clear(req: Request):
+    from . import auth
+    auth.clear_api_token(_me(req)["id"])
+    return {"ok": True}
+
+
+def _admin(req: Request) -> dict:
+    u = _me(req)
+    if not u.get("is_admin"):
+        raise HTTPException(403, "只有管理员能看")
+    return u
+
+
+@app.get("/api/admin/invites")
+def admin_invites(req: Request):
+    from . import auth
+    _admin(req)
+    return {"invites": auth.list_invites(), "users": auth.list_users()}
+
+
+@app.post("/api/admin/invites")
+def admin_new_invite(req: Request, d: dict = Body({})):
+    from . import auth
+    _admin(req)
+    return {"code": auth.create_invite(d.get("note", ""), bool(d.get("is_admin")))}
 
 
 def _j(v, default=None):
@@ -83,7 +225,7 @@ def get_settings():
 def put_settings(d: dict = Body(...)):
     # 密钥字段传空字符串表示不修改
     clean = {k: v for k, v in d.items() if not (k in db.SECRET_KEYS and (v is None or v == "" or isinstance(v, dict)))}
-    if "data_root" in d and d["data_root"]:
+    if "data_root" in d and d["data_root"] and not db.SERVER:
         cfg = db.boot_config()
         cfg["data_root"] = d["data_root"]
         db.save_boot_config(cfg)
@@ -134,10 +276,12 @@ def _test_anthropic(s: dict) -> dict:
 
 @app.post("/api/settings/import-dei-capture")
 def import_dei_capture():
-    p = Path.home() / ".claude/skills/dei-capture/config.json"
-    if not p.exists():
-        raise HTTPException(404, "没找到 dei-capture 的 config.json")
-    c = json.loads(p.read_text())
+    if db.SERVER:
+        raise HTTPException(403, "网页版不支持从本机导入")
+    p = db.dei_capture_config()
+    if not p:
+        raise HTTPException(404, "没找到 dei-capture 的 config.json（找过 ~/.claude、~/.workbuddy、~/.codex、~/.agents 下的 skills）")
+    c = json.loads(p.read_text(encoding="utf-8"))
     dy = c.get("douyin") or {}
     m = {"monid_token": (dy.get("monid") or {}).get("token"), "tikhub_token": (c.get("tikhub") or {}).get("token"),
          "dashscope_api_key": (c.get("dashscope") or {}).get("api_key"),
@@ -358,6 +502,24 @@ def get_content(pk: int):
 
 
 # ---------------- 博主 ----------------
+def _user_file(path: str | None) -> Path:
+    """只允许下载当前用户数据目录里的文件。"""
+    if not path:
+        raise HTTPException(404, "没有文件")
+    f = Path(path).resolve()
+    root = db.data_root().resolve()
+    if root not in f.parents or not f.is_file():
+        raise HTTPException(404, "文件不存在")
+    return f
+
+
+@app.get("/api/contents/{pk}/transcript.md")
+def download_transcript(pk: int):
+    c = db.q1("SELECT transcript_path FROM contents WHERE id=?", (pk,))
+    f = _user_file(c and c["transcript_path"])
+    return FileResponse(f, media_type="text/markdown; charset=utf-8", filename=f.name)
+
+
 @app.get("/api/authors")
 def list_authors(platform: str = "", q: str = "", monitored: int = 0):
     w, a = ["1=1"], []
@@ -432,6 +594,13 @@ def get_style_report(rid: int):
         raise HTTPException(404)
     a = db.q1("SELECT id, nickname, avatar, platform FROM authors WHERE id=?", (r["author_pk"],))
     return {**style_row(r, full=True), "author": a}
+
+
+@app.get("/api/style-reports/{rid}/report.md")
+def download_style_report(rid: int):
+    r = db.q1("SELECT path FROM style_reports WHERE id=?", (rid,))
+    f = _user_file(r and r["path"])
+    return FileResponse(f, media_type="text/markdown; charset=utf-8", filename=f.name)
 
 
 @app.delete("/api/style-reports/{rid}")

@@ -18,3 +18,5 @@ probe/
 config.json
 .env
 scripts/.private-patterns
+网页版部署方案.md
+scripts/.deploy-host

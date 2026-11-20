@@ -105,7 +105,7 @@ export default function ContentDetail() {
           <Card title={<span className="flex items-center gap-2"><FileText className="size-4" />逐字稿 <TranscriptBadge s={c.transcript_status} /></span>}
             extra={<>
               {cues.length > 0 && <Button size="sm" onClick={copy}><Copy className="size-3.5" />{copied ? '已复制' : '复制'}</Button>}
-              {c.transcript_path && <Button size="sm" variant="ghost" title={c.transcript_path} onClick={() => navigator.clipboard.writeText(c.transcript_path)}>复制文件路径</Button>}
+              {c.transcript_path && <a href={`/api/contents/${c.id}/transcript.md`} download><Button size="sm" variant="ghost">下载 md</Button></a>}
               {c.transcript_status === 'done' && <Button size="sm" variant="ghost" onClick={() => transcribe(true)}>重新转写</Button>}
             </>}>
             {c.transcript_status === 'done' && cues.length > 0 ? (

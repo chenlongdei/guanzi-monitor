@@ -1,6 +1,7 @@
 """任务：单条 / 关键词 / 博主 / 转写。后台线程跑，进度写进 jobs 表，前端轮询或 SSE 读。"""
 from __future__ import annotations
 
+import contextvars
 import json
 import math
 import threading
@@ -13,10 +14,19 @@ from .providers import PLATFORMS, ProviderError, get_provider
 from .services import links, store
 from .services.transcribe import PARAFORMER_CNY_PER_SEC, TranscribeError, transcribe_content
 
-POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="job")   # 同时跑的任务数
+POOL = ThreadPoolExecutor(max_workers=6 if db.SERVER else 3, thread_name_prefix="job")   # 同时跑的任务数（网页版所有人共用）
 ENRICH_PARALLEL = 10                                                  # 单个任务里补详情的并发数
 TPOOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="asr")
-_cancel: set[int] = set()
+_cancel: set[tuple] = set()   # (用户, 任务 id)：网页版每个用户的任务 id 各自从 1 开始
+
+
+def _ck(jid: int) -> tuple:
+    return (db.current_user(), jid)
+
+
+def _submit(pool, fn, *a):
+    """提交到线程池时带上当前用户（contextvars 不会自动传进线程）。"""
+    return pool.submit(contextvars.copy_context().run, fn, *a)
 _jlock = threading.Lock()
 
 KIND_LABEL = {"single": "单条采集", "keyword": "关键词", "blogger": "博主", "transcribe": "转写", "refresh": "刷新数据", "style": "文风 DNA"}
@@ -34,6 +44,7 @@ class Job:
         self.s = db.get_settings()
         self.provider = get_provider(self.s, self.on_call)
         self.logs = []
+        self._ll = threading.Lock()
 
     def on_call(self, provider, endpoint, cost, ok, ms, err):
         db.x("INSERT INTO calls(job_id, provider, endpoint, cost_usd, ok, ms, ts, error) VALUES(?,?,?,?,?,?,?,?)",
@@ -42,10 +53,11 @@ class Job:
             db.x("UPDATE jobs SET cost_usd = cost_usd + ? WHERE id=?", (cost, self.id))
 
     def log(self, msg, level="info"):
-        self.logs.append({"t": time.time(), "level": level, "msg": msg})
-        self.logs = self.logs[-300:]
-        db.x("UPDATE jobs SET log=? WHERE id=?", (json.dumps(self.logs, ensure_ascii=False), self.id))
-        if self.id in _cancel:
+        with self._ll:  # 转写线程也会写日志
+            self.logs.append({"t": time.time(), "level": level, "msg": msg})
+            self.logs = self.logs[-300:]
+            db.x("UPDATE jobs SET log=? WHERE id=?", (json.dumps(self.logs, ensure_ascii=False), self.id))
+        if _ck(self.id) in _cancel:
             raise Stop()
 
     def inc(self, **kw):
@@ -60,12 +72,12 @@ class Job:
 def create(kind: str, params: dict, title: str = "", platform: str | None = None, monitor_id: int | None = None) -> int:
     jid = db.x("INSERT INTO jobs(kind, platform, title, params, status, created, monitor_id) VALUES(?,?,?,?,?,?,?)",
                (kind, platform, title, json.dumps(params, ensure_ascii=False), "queued", db.now(), monitor_id))
-    POOL.submit(_run, jid)
+    _submit(POOL, _run, jid)
     return jid
 
 
 def cancel(jid: int):
-    _cancel.add(jid)
+    _cancel.add(_ck(jid))
 
 
 def _run(jid: int):
@@ -87,10 +99,20 @@ def _run(jid: int):
         j.logs.append({"t": time.time(), "level": "error", "msg": repr(e)})
         j.set(status="failed", error=repr(e)[:500], finished=db.now(), log=json.dumps(j.logs, ensure_ascii=False))
     finally:
-        _cancel.discard(jid)
+        _cancel.discard(_ck(jid))
         if j.row.get("monitor_id"):
             from .scheduler import after_monitor_job
             after_monitor_job(j.row["monitor_id"], jid)
+
+
+def _safe_log(j: Job):
+    """给转写线程用的日志：写库失败或任务被取消都不打断转写本身（取消由主线程处理）。"""
+    def log(msg, level="info"):
+        try:
+            j.log(msg, level)
+        except Exception:  # noqa
+            pass
+    return log
 
 
 # ---------------- 转写（并发 3） ----------------
@@ -98,7 +120,7 @@ def _transcribe_many(j: Job, pks: list[int]):
     if not pks:
         return
     j.log(f"开始转写 {len(pks)} 条")
-    futs = {TPOOL.submit(transcribe_content, pk, j.provider, j.s, j.p.get("force", False)): pk for pk in pks}
+    futs = {_submit(TPOOL, transcribe_content, pk, j.provider, j.s, j.p.get("force", False), _safe_log(j)): pk for pk in pks}
     for f, pk in futs.items():
         try:
             r = f.result()
@@ -214,7 +236,7 @@ def _enrich_one(j: Job, plat: str, it: dict) -> dict:
 def _enrich_many(j: Job, plat: str, items: list) -> list:
     j.log(f"补全详情 {len(items)} 条（并行 {ENRICH_PARALLEL}）")
     with ThreadPoolExecutor(max_workers=ENRICH_PARALLEL) as ex:
-        futs = [ex.submit(_enrich_one, j, plat, it) for it in items]
+        futs = [_submit(ex, _enrich_one, j, plat, it) for it in items]
         out = []
         for f, it in zip(futs, items):
             try:

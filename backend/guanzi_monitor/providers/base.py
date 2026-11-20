@@ -60,6 +60,11 @@ class Provider:
     def posts(self, platform: str, author_ref: dict, cursor=None) -> Page:
         raise NotImplementedError
 
+    def media_url(self, platform: str, ref: dict) -> str | None:
+        """只在转写时调用：用比 video() 更直接的接口拿可下载的音视频直链。
+        返回 None 表示这个渠道没有更好的取法，调用方回退到 video() 刷新。"""
+        return None
+
     def test(self) -> dict:
         raise NotImplementedError
 

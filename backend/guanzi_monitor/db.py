@@ -1,6 +1,7 @@
 """SQLite 存储。一条内容只存一份（平台 + 原生 ID 唯一），会变的数据进快照表，来源进来源表。"""
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import sqlite3
@@ -12,7 +13,30 @@ from pathlib import Path
 BOOT = Path(os.environ.get("GM_HOME") or os.environ.get("DEI_WB_HOME") or Path.home() / ".guanzi-monitor")
 BOOT_FILE = BOOT / "config.json"
 DEFAULT_DATA = Path.home() / "观自行深监控台"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
+
+# 网页版：GM_MODE=server 时要求登录，每个用户一个文件夹、一个数据库（天然隔离，不用改表结构）
+SERVER = os.environ.get("GM_MODE") == "server"
+SERVER_ROOT = Path(os.environ.get("GM_SERVER_ROOT") or "/srv/guanzi")
+_uid: contextvars.ContextVar[int | None] = contextvars.ContextVar("gm_uid", default=None)
+
+
+def current_user() -> int | None:
+    return _uid.get()
+
+
+@contextmanager
+def as_user(uid: int | None):
+    """在这个代码块里，所有 db / data_root 调用都落到该用户的库。"""
+    tok = _uid.set(uid)
+    try:
+        yield
+    finally:
+        _uid.reset(tok)
+
+
+def set_user(uid: int | None):
+    return _uid.set(uid)
 
 
 def _migrate_old_home():
@@ -99,7 +123,13 @@ def save_boot_config(cfg: dict):
 
 
 def data_root() -> Path:
-    """采集结果的根目录：环境变量 > ~/.guanzi-monitor/config.json > ~/观自行深监控台。"""
+    """采集结果的根目录：环境变量 > ~/.guanzi-monitor/config.json > ~/观自行深监控台。
+    网页版：SERVER_ROOT/users/<用户 id>。"""
+    if SERVER:
+        uid = _uid.get()
+        if not uid:
+            raise RuntimeError("网页版：当前没有登录用户，不能读写数据")
+        return SERVER_ROOT / "users" / str(int(uid))
     p = os.environ.get("GM_DATA") or os.environ.get("DEI_WB_DATA") or boot_config().get("data_root") or str(DEFAULT_DATA)
     return Path(p).expanduser()
 
@@ -114,16 +144,29 @@ _local = threading.local()
 _lock = threading.RLock()
 
 
+_inited: set[str] = set()
+
+
 def conn() -> sqlite3.Connection:
-    c = getattr(_local, "c", None)
+    """每个线程、每个库文件一个连接（网页版一个线程会先后服务多个用户）。"""
+    p = db_path()
+    key = str(p)
+    cs = getattr(_local, "cs", None)
+    if cs is None:
+        cs = _local.cs = {}
+    c = cs.get(key)
     if c is None:
-        p = db_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         c = sqlite3.connect(p, timeout=30, check_same_thread=False)
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA foreign_keys=ON")
-        _local.c = c
+        with _lock:
+            if key not in _inited:
+                c.executescript(SCHEMA)
+                c.commit()
+                _inited.add(key)
+        cs[key] = c
     return c
 
 
@@ -215,10 +258,23 @@ def public_settings() -> dict:
     for k in SECRET_KEYS:
         v = s.get(k) or ""
         s[k] = {"set": bool(v), "tail": v[-4:] if v else ""}
-    s["data_root"] = str(data_root())
-    s["db_path"] = str(db_path())
+    s["server"] = SERVER
+    s["data_root"] = "云端（你的账号专属空间）" if SERVER else str(data_root())
+    s["db_path"] = "" if SERVER else str(db_path())
     s["demo"] = bool(os.environ.get("DEI_WB_DEMO"))
-    s["has_dei_capture"] = (Path.home() / ".claude/skills/dei-capture/config.json").exists()
+    s["has_dei_capture"] = (not SERVER) and dei_capture_config() is not None
     s["version"] = VERSION
     s["ready"] = bool(s["monid_token"]["set"] if s.get("provider") != "tikhub" else s["tikhub_token"]["set"])
     return s
+
+
+AGENT_HOMES = (".claude", ".workbuddy", ".codex", ".agents")
+
+
+def dei_capture_config() -> Path | None:
+    """dei-capture 的 config.json：Claude Code / WorkBuddy / Codex / 其他 Agent 的 skills 目录依次找。"""
+    for h in AGENT_HOMES:
+        p = Path.home() / h / "skills" / "dei-capture" / "config.json"
+        if p.exists():
+            return p
+    return None

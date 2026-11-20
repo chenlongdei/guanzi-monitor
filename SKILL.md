@@ -30,7 +30,7 @@ description: 观自行深监控台：在本机打开一个网页工作台，采�
    - GitHub 访问不了：在地址前加 `https://ghfast.top/` 再试
 3. **启动**（第一次会自动装好 Python 环境，1–2 分钟，不需要用户预先装任何东西）：
    - macOS / Linux：`bash <目标文件夹>/scripts/start.sh --bg`
-   - Windows，你的命令行是 Git Bash：同上
+   - Windows，你的命令行是 Git Bash：同上，可以先用它装好、确认能打开；但 `--bg` 起的进程会随你的会话一起结束，装好后让用户以后双击 `启动监控台.bat` 并保留那个窗口
    - Windows，你的命令行是 PowerShell / cmd：`Start-Process "<目标文件夹>\启动监控台.bat"`（会弹出一个窗口，告诉用户别关它）。查状态用 `& "$env:USERPROFILE\.guanzi-monitor\venv\Scripts\guanzi-monitor.exe" --status`
    - 输出里 `"running": true` 和 `url` 就是成功，浏览器会自动打开
 4. **更新**：`git -C <目标文件夹> pull`，然后先 `--stop` 再启动。数据和 Key 不受影响

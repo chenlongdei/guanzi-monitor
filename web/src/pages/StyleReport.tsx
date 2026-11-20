@@ -71,8 +71,9 @@ export default function StyleReport() {
       <div className="mt-4 flex items-center gap-2">
         <CopyBtn text={stylePrompt(r.report)} label="复制仿写提示词" />
         <CopyBtn text={r.report} label="复制全文 Markdown" />
-        <span className="text-xs text-mute ml-2 truncate flex-1" title={r.path}>{r.path}</span>
-        <Button variant="danger" onClick={async () => { if (confirm('删除这份报告？（本地 md 文件保留）')) { await api(`/style-reports/${r.id}`, { method: 'DELETE' }); nav(-1) } }}>
+        {r.path && <a href={`/api/style-reports/${r.id}/report.md`} download><Button variant="ghost">下载 md</Button></a>}
+        <span className="flex-1" />
+        <Button variant="danger" onClick={async () => { if (confirm('删除这份报告？（已生成的 md 文件保留）')) { await api(`/style-reports/${r.id}`, { method: 'DELETE' }); nav(-1) } }}>
           <Trash2 className="size-4" />删除
         </Button>
       </div>

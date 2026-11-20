@@ -6,6 +6,11 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
     headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   })
+  if (r.status === 401 && !path.startsWith('/auth/')) {
+    // 网页版：没登录或登录过期，去登录页
+    if (location.pathname !== '/login') location.href = '/login'
+    throw new Error('请先登录')
+  }
   if (!r.ok) {
     let msg = r.statusText
     try { const j = await r.json(); msg = j.detail || JSON.stringify(j) } catch {}

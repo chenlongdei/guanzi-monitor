@@ -11,6 +11,7 @@ import ContentDetail from './pages/ContentDetail'
 import { JobDetail, Jobs } from './pages/Jobs'
 import Keyword from './pages/Keyword'
 import Library from './pages/Library'
+import Login from './pages/Login'
 import Monitors from './pages/Monitors'
 import Overview from './pages/Overview'
 import Profile from './pages/Profile'
@@ -27,6 +28,7 @@ createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <JobProvider>
           <Routes>
+            <Route path="login" element={<Login />} />
             <Route element={<Layout />}>
               <Route index element={<Overview />} />
               <Route path="welcome" element={<Welcome />} />

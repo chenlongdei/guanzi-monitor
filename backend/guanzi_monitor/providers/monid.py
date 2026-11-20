@@ -12,6 +12,7 @@ import urllib.request
 
 from .base import Page, Provider, ProviderError, find, first_str, num, ts
 from . import sph_map
+from .tikhub import xhs_video_url
 
 EP = {
     ("douyin", "video"): ("anyapi", "/douyin.video"),
@@ -20,7 +21,8 @@ EP = {
     ("douyin", "index_search"): ("tikhub", "/api/v1/douyin/index/fetch_item_query"),
     ("douyin", "profile"): ("anyapi", "/douyin.profile"),
     ("douyin", "posts"): ("anyapi", "/douyin.user_posts"),
-    ("xhs", "video"): ("anyapi", "/rednote.note"),
+    ("xhs", "video"): ("anyapi", "/rednote.note"),          # 只有元数据，没有视频地址
+    ("xhs", "video_dl"): ("tikhub", "/api/v1/xiaohongshu/app_v2/get_video_note_detail"),  # 转写取直链用
     ("xhs", "search"): ("anyapi", "/rednote.search"),
     ("xhs", "profile"): ("anyapi", "/rednote.profile"),
     ("xhs", "posts"): ("anyapi", "/rednote.user_notes"),
@@ -37,7 +39,7 @@ class MonidProvider(Provider):
     PRICES = {
         ("douyin", "video"): 0.001, ("douyin", "search"): 0.012, ("douyin", "index_search"): 0.001,
         ("douyin", "profile"): 0.001,
-        ("douyin", "posts"): 0.0012, ("xhs", "video"): 0.012, ("xhs", "search"): 0.01,
+        ("douyin", "posts"): 0.0012, ("xhs", "video"): 0.012, ("xhs", "video_dl"): 0.01, ("xhs", "search"): 0.01,
         ("xhs", "profile"): 0.01, ("xhs", "posts"): 0.01, ("sph", "video"): 0.01,
         ("sph", "search"): 0.01, ("sph", "profile"): 0.01, ("sph", "posts"): 0.01,
     }
@@ -127,6 +129,13 @@ class MonidProvider(Provider):
             out = self.run("sph", "video", body)
             return sph_map.item(out)
         raise ProviderError(f"不支持的平台 {platform}")
+
+    def media_url(self, platform, ref):
+        """小红书：anyapi 的 rednote.note 不给视频地址，转写时改走 TikHub 视频笔记详情取 master_url。"""
+        if platform == "xhs" and ref.get("content_id"):
+            out = self.run("xhs", "video_dl", query={"note_id": ref["content_id"]})
+            return xhs_video_url(out)
+        return None
 
     def _douyin_video(self, ref):
         """抖音单条：anyapi（分享链接）→ anyapi（长链接）→ TikHub fetch_one_video_v2（视频 ID）。每层约 $0.001。"""
@@ -392,3 +401,4 @@ def xhs_author(x):
             "followers": num(x.get("followers")), "following": num(x.get("following")),
             "likes": (num(x.get("likedCount")) or 0) + (num(x.get("collectedCount")) or 0) or None,
             "posts": num(x.get("postedNotes"))}
+

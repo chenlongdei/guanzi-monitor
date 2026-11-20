@@ -46,8 +46,8 @@ def main():
         cfg = db.boot_config()
         cfg["data_root"] = os.path.abspath(os.path.expanduser(a.data))
         db.save_boot_config(cfg)
-    root = db.data_root()
-    if not a.demo and root.anchor and not os.path.exists(root.anchor if root.anchor != "/" else "/"):
+    root = db.SERVER_ROOT if db.SERVER else db.data_root()
+    if not a.demo and not db.SERVER and root.anchor and not os.path.exists(root.anchor if root.anchor != "/" else "/"):
         raise SystemExit(f"保存位置不可用：{root}")
     if not a.demo and str(root).startswith("/Volumes/") and not os.path.exists("/".join(str(root).split("/")[:3])):
         raise SystemExit(f"外接盘没插：{root}")
@@ -83,7 +83,7 @@ def main():
     url = f"http://{a.host}:{port}"
     db.BOOT.mkdir(parents=True, exist_ok=True)
     run_file.write_text(json.dumps({"url": url, "pid": os.getpid(), "started": time.time(), "data": str(root)}))
-    print(f"观自行深监控台 → {url}\n数据：{db.db_path()}\n{'【演示模式】' if a.demo else ''}")
+    print(f"观自行深监控台 → {url}\n数据：{root if db.SERVER else db.db_path()}\n{'【网页版】' if db.SERVER else ''}{'【演示模式】' if a.demo else ''}")
     if not a.no_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     import uvicorn

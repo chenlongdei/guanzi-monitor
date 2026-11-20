@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Download, XCircle } from 'lucide-react'
 import { ReactNode, useEffect, useState } from 'react'
 import { api } from '../api'
+import { AccountCard } from '../components/Account'
 import { Badge, Button, Card, Input, PageHeader, Segmented } from '../components/ui'
 
 function Row({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -46,11 +47,13 @@ export default function Settings() {
   if (!s) return null
   return (
     <div>
-      <PageHeader title="设置" desc={`凭证只存在本机数据库里 · 版本 ${s.version || ''}`} extra={s.has_dei_capture &&
+      <PageHeader title="设置" desc={`${s.server ? '凭证只存在你自己的账号空间里，别人看不到' : '凭证只存在本机数据库里'} · 版本 ${s.version || ''}`} extra={s.has_dei_capture &&
         <Button onClick={async () => { const r = await api('/settings/import-dei-capture', { method: 'POST' }); alert(`已导入：${r.imported.join('、') || '无'}`); qc.invalidateQueries() }}>
           <Download className="size-4" />从 dei-capture 导入凭证
         </Button>} />
       {s.demo && <div className="mb-4 rounded-xl bg-amber-50 text-amber-800 text-sm px-4 py-3">现在是演示模式：所有采集都是假数据，不联网、不花钱，数据存在独立的 demo.db。正式用时去掉 --demo 启动。</div>}
+
+      <AccountCard />
 
       <Card title="数据渠道">
         <Row label="采集用哪家" hint="切换后，所有采集和监控都走这家">
@@ -85,11 +88,11 @@ export default function Settings() {
       </Card>
 
       <Card title="保存与费用" className="mt-4">
-        <Row label="采集结果保存位置" hint="逐字稿 md 和数据库都在这里；改了要重启监控台">
+        {!s.server && <Row label="采集结果保存位置" hint="逐字稿 md 和数据库都在这里；改了要重启监控台">
           <Input value={local.data_root || ''} onChange={(e) => setLocal({ ...local, data_root: e.target.value })} className="w-[460px]" />
           <Button disabled={local.data_root === s.data_root} onClick={() => save({ data_root: local.data_root })}>保存</Button>
           <div className="w-full text-xs text-mute">数据库：{s.db_path}</div>
-        </Row>
+        </Row>}
         <Row label="超过多少条先确认" hint="计费前先报数">
           <Input type="number" value={local.confirm_over_items ?? ''} onChange={(e) => setLocal({ ...local, confirm_over_items: Number(e.target.value) })} onBlur={() => save({ confirm_over_items: local.confirm_over_items })} className="w-24" /><span className="text-sm text-mute">条</span>
         </Row>

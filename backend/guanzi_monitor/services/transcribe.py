@@ -71,7 +71,8 @@ def test_key(s: dict) -> dict:
         return {"ok": False, "msg": str(e)}
 
 
-def paraformer(media_url: str, s: dict, max_wait=1800):
+def paraformer(media_url: str, s: dict, max_wait=1800, log=None):
+    log = log or (lambda *a, **k: None)
     key = (s.get("dashscope_api_key") or "").strip()
     if not key:
         raise TranscribeError("没有填阿里云百炼 Key（设置页，sk- 开头）")
@@ -83,10 +84,18 @@ def paraformer(media_url: str, s: dict, max_wait=1800):
     task = (resp.get("output") or {}).get("task_id")
     if not task:
         raise TranscribeError(f"提交转写失败：{json.dumps(resp, ensure_ascii=False)[:200]}")
-    t0 = time.time()
+    log(f"已提交阿里云转写（任务 {task[:8]}…），等待结果")
+    t0 = last_log = time.time()
     while time.time() - t0 < max_wait:
-        out = _post(f"{base}/api/v1/tasks/{task}", key).get("output") or {}
-        st = out.get("task_status")
+        resp = _post(f"{base}/api/v1/tasks/{task}", key)
+        out = resp.get("output")
+        if not isinstance(out, dict) or not out.get("task_status"):
+            # 没有 output / 没有状态：不是「还在跑」，继续等只会空转到超时
+            raise TranscribeError(f"查询转写进度返回异常：{json.dumps(resp, ensure_ascii=False)[:200]}")
+        st = out["task_status"]
+        if time.time() - last_log >= 60:
+            last_log = time.time()
+            log(f"阿里云转写进行中（{st}），已等 {int(time.time() - t0)} 秒")
         if st == "SUCCEEDED":
             res = (out.get("results") or [{}])[0]
             if res.get("subtask_status") != "SUCCEEDED":
@@ -102,7 +111,7 @@ def paraformer(media_url: str, s: dict, max_wait=1800):
         if st in ("FAILED", "CANCELED", "UNKNOWN"):
             raise TranscribeError(f"转写任务失败：{json.dumps(out, ensure_ascii=False)[:200]}")
         time.sleep(4)
-    raise TranscribeError("转写超时")
+    raise TranscribeError(f"转写超时：等了 {max_wait // 60} 分钟阿里云还没出结果")
 
 
 def dasheng(url: str, s: dict) -> str | None:
@@ -118,6 +127,36 @@ def dasheng(url: str, s: dict) -> str | None:
     for k in ("video", "video_url", "url", "play_url"):
         if isinstance(d.get(k), str) and d[k].startswith("http"):
             return d[k]
+    return None
+
+
+def _fresh_media_url(c: dict, provider, errs: list, log) -> str | None:
+    """重新取直链：provider.media_url()（只在转写时调，如小红书走 TikHub 视频详情）→ provider.video() 刷新。
+    取到就写回 contents.media_url；每条路线为什么没取到都记进 errs，不再静默。"""
+    ref = store.content_ref(c)
+    try:
+        u = provider.media_url(c["platform"], ref)
+        if u:
+            log("已取到视频直链")
+            db.x("UPDATE contents SET media_url=? WHERE id=?", (u, c["id"]))
+            return u
+    except ProviderError as e:
+        if e.fatal:
+            raise
+        errs.append(f"取直链失败：{e}")
+    try:
+        log("重新取一次详情找直链")
+        fresh = provider.video(c["platform"], ref)
+        if fresh.get("content_id") == c["content_id"]:
+            # 顺手把详情写回：补全评论/收藏/分享、博主 sec_uid 等
+            store.upsert_content(fresh, provider.name, "refresh", label="转写前取直链")
+        if fresh.get("media_url"):
+            return fresh["media_url"]
+        errs.append(f"{provider.name} 的详情里没有视频直链")
+    except ProviderError as e:
+        if e.fatal:
+            raise
+        errs.append(f"刷新直链失败：{e}")
     return None
 
 
@@ -161,7 +200,10 @@ def write_md(c: dict, author: dict | None, cues: list, no_voice: bool = False) -
     return p
 
 
-def transcribe_content(pk: int, provider, s: dict, force=False) -> dict:
+def transcribe_content(pk: int, provider, s: dict, force=False, log=None) -> dict:
+    """log(msg, level)：每一步写进任务日志，卡住时能看出卡在哪。"""
+    _log = log or (lambda *a, **k: None)
+    log = lambda msg, level="info": _log(f"#{pk} {msg}", level)  # noqa: E731
     c = db.q1("SELECT * FROM contents WHERE id=?", (pk,))
     if not c:
         raise TranscribeError("内容不存在")
@@ -186,35 +228,38 @@ def transcribe_content(pk: int, provider, s: dict, force=False) -> dict:
         else:
             errs = []
             urls = [c.get("media_url")]
+            if not urls[0]:
+                log("库里没有视频直链，去渠道取")
             cues = dur = None
             for attempt in range(3):
                 u = urls[-1]
                 if u:
                     try:
-                        cues, dur = paraformer(u, s)
+                        cues, dur = paraformer(u, s, log=log)
                         break
                     except KeyError_:
                         raise
                     except Exception as e:  # noqa
                         errs.append(str(e)[:160])
-                if attempt == 0:  # 直链没有或过期：重新取一次详情
-                    try:
-                        fresh = provider.video(c["platform"], store.content_ref(c))
-                        urls.append(fresh.get("media_url"))
-                        if fresh.get("content_id") == c["content_id"]:
-                            # 顺手把详情写回：补全评论/收藏/分享、博主 sec_uid 等
-                            store.upsert_content(fresh, provider.name, "refresh", label="转写前取直链")
-                    except ProviderError as e:
-                        errs.append(f"刷新直链失败：{e}")
-                        urls.append(None)
+                        log(f"转写失败，换一个直链再试：{str(e)[:120]}", "warn")
+                if attempt == 0:  # 直链没有或过期：先用渠道专门取直链的接口，没有再重新取一次详情
+                    urls.append(_fresh_media_url(c, provider, errs, log))
                 elif attempt == 1:  # 再试大圣去水印
+                    if not (s.get("dasheng_uid") and s.get("dasheng_key")):
+                        errs.append("大圣去水印没配置，跳过")
+                        urls.append(None)
+                        continue
                     try:
-                        urls.append(dasheng(c.get("url"), s))
+                        log("改用大圣去水印取直链")
+                        v = dasheng(c.get("url"), s)
+                        if not v:
+                            errs.append("大圣没返回视频地址")
+                        urls.append(v)
                     except Exception as e:  # noqa
                         errs.append(f"大圣失败：{e}")
                         urls.append(None)
             if cues is None:
-                raise TranscribeError("拿不到可转写的音频：" + "；".join(errs or ["没有媒体直链"]))
+                raise TranscribeError("拿不到可转写的音频：" + "；".join(errs or ["渠道没有返回可用的视频直链"]))
         c = db.q1("SELECT * FROM contents WHERE id=?", (pk,))
         if c.get("author_pk"):
             author = db.q1("SELECT * FROM authors WHERE id=?", (c["author_pk"],))
@@ -224,6 +269,7 @@ def transcribe_content(pk: int, provider, s: dict, force=False) -> dict:
         ex["no_voice"] = no_voice
         db.x("UPDATE contents SET extra=? WHERE id=?", (json.dumps(ex, ensure_ascii=False), pk))
         path = write_md(c, author, cues, no_voice)
+        log(f"转写完成，{len(cues)} 句")
         cost = round((dur or c.get("duration_s") or 0) * PARAFORMER_CNY_PER_SEC, 4)
         db.x("""UPDATE contents SET transcript_status='done', transcript_text=?, transcript_path=?, transcript_error=NULL,
                 transcript_cost=?, duration_s=COALESCE(duration_s, ?) WHERE id=?""",

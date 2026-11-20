@@ -64,6 +64,11 @@ class TikHubProvider(Provider):
             return sph_map.item(self.call("/api/v1/wechat_channels/v2/fetch_video_detail", body=body))
         raise ProviderError(platform)
 
+    def media_url(self, platform, ref):
+        if platform == "xhs" and ref.get("content_id"):
+            return xhs_video_url(self.call("/api/v1/xiaohongshu/app_v2/get_video_note_detail", {"note_id": ref["content_id"]}))
+        return None
+
     def search(self, platform, keyword, sort="relevance", days=0, cursor=None, opts=None):
         cur = cursor or {}
         if platform == "douyin":
@@ -173,9 +178,28 @@ def xhs_raw_item(n):
     return {"platform": "xhs", "content_id": nid, "url": f"https://www.xiaohongshu.com/explore/{nid}",
             "title": n.get("title") or n.get("display_title") or "", "caption": n.get("desc") or "",
             "type": "video" if n.get("type") == "video" else "image", "published_at": ts(n.get("time") or n.get("create_time")),
-            "duration_s": None, "cover": first_str(find(n, "url_default", "url")), "media_url": None, "tags": [],
+            "duration_s": None, "cover": first_str(find(n, "url_default", "url")),
+            "media_url": xhs_video_url(n) if n.get("type") == "video" else None, "tags": [],
             "views": None, "likes": num(n.get("liked_count") or n.get("likes")), "comments": num(n.get("comments_count")),
             "saves": num(n.get("collected_count")), "shares": num(n.get("shared_count")),
             "author": {"platform": "xhs", "author_id": u.get("userid") or u.get("user_id") or u.get("id"),
                        "nickname": u.get("nickname") or u.get("name"), "avatar": u.get("images") or u.get("image")},
             "extra": {}}
+
+
+def xhs_video_url(out):
+    """TikHub 小红书视频笔记详情 → 可下载的 mp4 直链（带签名、会过期，取到就用）。
+    路径：data[0].video_info_v2.media.stream.{h264,h265,av1}[0].master_url，旧版字段兜底。"""
+    vi = find(out, "video_info_v2") or {}
+    stream = ((vi.get("media") or {}).get("stream") or {}) if isinstance(vi, dict) else {}
+    for codec in ("h264", "h265", "h266", "av1"):
+        for s in stream.get(codec) or []:
+            if not isinstance(s, dict):
+                continue
+            for u in [s.get("master_url"), *(s.get("backup_urls") or [])]:
+                if isinstance(u, str) and u.startswith("http"):
+                    return u
+    u = find(out, "master_url") if not stream else None
+    if isinstance(u, str) and u.startswith("http") and (".mp4" in u or "/stream/" in u):
+        return u
+    return None

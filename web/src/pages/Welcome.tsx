@@ -79,7 +79,7 @@ export default function Welcome() {
         <KeyInput k="dashscope_api_key" test="dashscope" placeholder="sk-…" s={s} />
       </Step>
 
-      <Step n={3} title="试采一条" hint={<>采到的内容、逐字稿保存在：<code className="break-all">{s.data_root}</code>（设置里可以改）</>}>
+      <Step n={3} title="试采一条" hint={s.server ? <>采到的内容、逐字稿都存在你的账号里，随时能在内容库查看、下载、导出 Excel。</> : <>采到的内容、逐字稿保存在：<code className="break-all">{s.data_root}</code>（设置里可以改）</>}>
         <Button variant="primary" disabled={!monid} onClick={() => nav('/single')}>
           去粘一条抖音或小红书链接 <ArrowRight className="size-4" />
         </Button>
