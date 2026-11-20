@@ -180,9 +180,35 @@ def admin_invites(req: Request):
 
 @app.post("/api/admin/invites")
 def admin_new_invite(req: Request, d: dict = Body({})):
+    """生成邀请码：count 一次几个（最多 50），days 有效期（不填就不过期）。"""
     from . import auth
     _admin(req)
-    return {"code": auth.create_invite(d.get("note", ""), bool(d.get("is_admin")))}
+    n = max(1, min(int(d.get("count") or 1), 50))
+    note = (d.get("note") or "").strip()
+    codes = [auth.create_invite(f"{note}-{i + 1}" if n > 1 and note else note, bool(d.get("is_admin")), d.get("days"))
+             for i in range(n)]
+    return {"code": codes[0], "codes": codes}
+
+
+@app.patch("/api/admin/invites/{code}")
+def admin_patch_invite(code: str, req: Request, d: dict = Body({})):
+    from . import auth
+    _admin(req)
+    try:
+        return auth.update_invite(code, d.get("sent_to"), bool(d.get("mark_sent")))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/admin/invites/{code}")
+def admin_delete_invite(code: str, req: Request):
+    from . import auth
+    _admin(req)
+    try:
+        auth.delete_invite(code)
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 def _j(v, default=None):

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
-import { BellRing, Hash, LayoutDashboard, Library, Link2, ListChecks, LogOut, Settings, UserRound, Users } from 'lucide-react'
+import { Suspense, useEffect, useState } from 'react'
+import { BellRing, Hash, LayoutDashboard, Library, Link2, ListChecks, LogOut, Menu, Settings, UserRound, Users, X } from 'lucide-react'
 import { Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { Avatar } from './ui'
@@ -36,13 +37,18 @@ export default function Layout() {
   })
   const n = running?.length || 0
   const loc = useLocation()
+  const [open, setOpen] = useState(false)   // 手机上的侧栏抽屉
+  useEffect(() => setOpen(false), [loc.pathname])
   if (me?.server && !me.user) return <Navigate to="/login" replace />
   // 还没填数据渠道的 Key：先去欢迎页
   if (s && !s.ready && !s.demo && !['/welcome', '/settings', '/profile'].includes(loc.pathname)) return <Navigate to="/welcome" replace />
   return (
     <div className="flex h-full">
-      <aside className="w-[216px] shrink-0 bg-ink flex flex-col">
-        <div className="px-5 pt-5 pb-4">
+      {open && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setOpen(false)} />}
+      <aside className={clsx('w-[216px] shrink-0 bg-ink flex flex-col z-40',
+        'fixed inset-y-0 left-0 transition-transform md:static md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
+        <div className="px-5 pt-5 pb-4 relative">
+          <button className="md:hidden absolute right-3 top-4 text-white/60 p-1" onClick={() => setOpen(false)} aria-label="关闭菜单"><X className="size-5" /></button>
           <img src="/logo-white.png" alt="观自行深" className="h-[26px] w-auto" />
           <div className="mt-2 flex items-center gap-1.5 text-[11px] leading-tight">
             <span className="rounded bg-lime text-ink font-semibold px-1.5 py-0.5">监控台</span>
@@ -72,9 +78,16 @@ export default function Layout() {
           </NavLink>
         </div>
       </aside>
-      <main className="flex-1 overflow-auto scroll-thin">
-        <div className="max-w-[1280px] mx-auto px-8 py-7">
-          <Outlet />
+      <main className="flex-1 min-w-0 overflow-auto scroll-thin">
+        <div className="md:hidden sticky top-0 z-20 bg-ink flex items-center gap-3 px-4 h-12">
+          <button onClick={() => setOpen(true)} className="text-white p-1 -ml-1" aria-label="打开菜单"><Menu className="size-5" /></button>
+          <img src="/logo-white.png" alt="观自行深" className="h-[20px] w-auto" />
+          {n > 0 && <span className="ml-auto text-[11px] rounded-full bg-sky-400 text-ink px-2 py-0.5 font-semibold">{n} 个任务运行中</span>}
+        </div>
+        <div className="max-w-[1280px] mx-auto px-4 py-5 md:px-8 md:py-7">
+          <Suspense fallback={<div className="py-20 text-center text-sm text-mute">加载中…</div>}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
     </div>

@@ -1,24 +1,27 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { StrictMode } from 'react'
+import { lazy, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { JobProvider } from './components/jobs'
 import Layout from './components/Layout'
 import './index.css'
-import AuthorDetail from './pages/AuthorDetail'
-import Blogger from './pages/Blogger'
-import ContentDetail from './pages/ContentDetail'
-import { JobDetail, Jobs } from './pages/Jobs'
-import Keyword from './pages/Keyword'
-import Library from './pages/Library'
 import Login from './pages/Login'
-import Monitors from './pages/Monitors'
-import Overview from './pages/Overview'
-import Profile from './pages/Profile'
-import Settings from './pages/Settings'
-import Single from './pages/Single'
-import StyleReport from './pages/StyleReport'
-import Welcome from './pages/Welcome'
+
+// 页面按需加载：图表（recharts）、Markdown 只在用到的页面才下载，首屏更快
+const AuthorDetail = lazy(() => import('./pages/AuthorDetail'))
+const Blogger = lazy(() => import('./pages/Blogger'))
+const ContentDetail = lazy(() => import('./pages/ContentDetail'))
+const Keyword = lazy(() => import('./pages/Keyword'))
+const Library = lazy(() => import('./pages/Library'))
+const Monitors = lazy(() => import('./pages/Monitors'))
+const Overview = lazy(() => import('./pages/Overview'))
+const Profile = lazy(() => import('./pages/Profile'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Single = lazy(() => import('./pages/Single'))
+const StyleReport = lazy(() => import('./pages/StyleReport'))
+const Welcome = lazy(() => import('./pages/Welcome'))
+const Jobs = lazy(() => import('./pages/Jobs').then((m) => ({ default: m.Jobs })))
+const JobDetail = lazy(() => import('./pages/Jobs').then((m) => ({ default: m.JobDetail })))
 
 const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 2000, refetchOnWindowFocus: true } } })
 

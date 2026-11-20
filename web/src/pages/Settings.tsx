@@ -7,7 +7,7 @@ import { Badge, Button, Card, Input, PageHeader, Segmented } from '../components
 
 function Row({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[180px_1fr] gap-4 py-3 border-b border-line last:border-0 items-start">
+    <div className="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:gap-4 py-3 border-b border-line last:border-0 items-start">
       <div><div className="text-sm font-medium">{label}</div>{hint && <div className="text-xs text-mute mt-0.5">{hint}</div>}</div>
       <div className="flex items-center gap-2 flex-wrap">{children}</div>
     </div>

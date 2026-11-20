@@ -45,6 +45,11 @@ def _conn() -> sqlite3.Connection:
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(SCHEMA)
+        cols = {r[1] for r in c.execute("PRAGMA table_info(invites)")}
+        for col, typ in (("sent_to", "TEXT"), ("sent_at", "REAL"), ("expires", "REAL")):   # v0.1.3 新增
+            if col not in cols:
+                c.execute(f"ALTER TABLE invites ADD COLUMN {col} {typ}")
+        c.commit()
         _local.c = c
     return c
 
@@ -87,10 +92,35 @@ def check_pw(pw: str, stored: str) -> bool:
 
 
 # ---------- 邀请码 ----------
-def create_invite(note: str = "", is_admin: bool = False) -> str:
+def create_invite(note: str = "", is_admin: bool = False, days: float | None = None) -> str:
+    """days：有效期（天），不填就一直有效。"""
     code = "GZ-" + secrets.token_hex(3).upper()
-    _x("INSERT INTO invites(code, note, is_admin, created) VALUES(?,?,?,?)", (code, note, int(is_admin), time.time()))
+    exp = time.time() + float(days) * 86400 if days else None
+    _x("INSERT INTO invites(code, note, is_admin, created, expires) VALUES(?,?,?,?,?)",
+       (code, note, int(is_admin), time.time(), exp))
     return code
+
+
+def update_invite(code: str, sent_to: str | None = None, mark_sent: bool = False):
+    """登记发给了谁；mark_sent=True 时记下发出时间（复制邀请话术时自动调用）。"""
+    inv = _q1("SELECT * FROM invites WHERE code=?", (code,))
+    if not inv:
+        raise AuthError("没有这个邀请码")
+    if sent_to is not None:
+        _x("UPDATE invites SET sent_to=? WHERE code=?", (sent_to.strip()[:40], code))
+    if mark_sent and not inv.get("sent_at"):
+        _x("UPDATE invites SET sent_at=? WHERE code=?", (time.time(), code))
+    return _q1("SELECT * FROM invites WHERE code=?", (code,))
+
+
+def delete_invite(code: str):
+    """作废没用过的邀请码（用过的不能删，账号还挂着它）。"""
+    inv = _q1("SELECT * FROM invites WHERE code=?", (code,))
+    if not inv:
+        raise AuthError("没有这个邀请码")
+    if inv["used_by"]:
+        raise AuthError("已经用过的邀请码不能作废")
+    _x("DELETE FROM invites WHERE code=?", (code,))
 
 
 def list_invites():
@@ -146,6 +176,8 @@ def register(username: str, password: str, code: str, ip: str = "") -> dict:
         if not inv or inv["used_by"]:
             _failed({"reg": ip})
             raise AuthError("邀请码不对" if not inv else "这个邀请码已经用过了")
+        if inv.get("expires") and inv["expires"] < time.time():
+            raise AuthError("这个邀请码已过期，请联系发码的人要一个新的")
         if _q1("SELECT id FROM users WHERE username=?", (username,)):
             raise AuthError("这个账号名已经有人用了")
         uid = _x("INSERT INTO users(username, pw_hash, is_admin, invite_code, created) VALUES(?,?,?,?,?)",

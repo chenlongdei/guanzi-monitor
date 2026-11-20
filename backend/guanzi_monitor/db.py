@@ -13,7 +13,7 @@ from pathlib import Path
 BOOT = Path(os.environ.get("GM_HOME") or os.environ.get("DEI_WB_HOME") or Path.home() / ".guanzi-monitor")
 BOOT_FILE = BOOT / "config.json"
 DEFAULT_DATA = Path.home() / "观自行深监控台"
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 # 网页版：GM_MODE=server 时要求登录，每个用户一个文件夹、一个数据库（天然隔离，不用改表结构）
 SERVER = os.environ.get("GM_MODE") == "server"

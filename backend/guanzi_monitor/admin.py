@@ -26,6 +26,8 @@ def main():
     i = sub.add_parser("invite")
     i.add_argument("--note", default="")
     i.add_argument("--admin", action="store_true")
+    i.add_argument("--count", type=int, default=1)
+    i.add_argument("--days", type=float, default=None, help="有效期（天），不填不过期")
     sub.add_parser("users")
     sub.add_parser("invites")
     r = sub.add_parser("reset-password")
@@ -33,7 +35,8 @@ def main():
     r.add_argument("password")
     a = ap.parse_args()
     if a.cmd == "invite":
-        print(auth.create_invite(a.note, a.admin))
+        for k in range(max(1, a.count)):
+            print(auth.create_invite(f"{a.note}-{k + 1}" if a.count > 1 and a.note else a.note, a.admin, a.days))
     elif a.cmd == "users":
         for u in auth.list_users():
             print(f"{u['id']:>3}  {u['username']:<16} {'管理员' if u['is_admin'] else '      '} "
@@ -41,7 +44,8 @@ def main():
     elif a.cmd == "invites":
         for v in auth.list_invites():
             print(f"{v['code']}  {v['note'] or '':<10} {'管理员' if v['is_admin'] else ''}  "
-                  f"{'已用：' + (v['used_by_name'] or '') if v['used_by'] else '未用'}")
+                  f"{'已用：' + (v['used_by_name'] or '') if v['used_by'] else '未用'}  "
+                  f"发给：{v.get('sent_to') or '—'}  {'过期 ' + _t(v['expires']) if v.get('expires') else ''}")
     elif a.cmd == "reset-password":
         auth.reset_password(a.username, a.password)
         print("已重置，旧登录全部失效")

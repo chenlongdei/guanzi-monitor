@@ -18,14 +18,14 @@ export default function Overview() {
   return (
     <div>
       <PageHeader title="总览" desc={`数据渠道：${o.provider === 'demo' ? '演示' : o.provider === 'tikhub' ? 'TikHub' : 'Monid'}`} />
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat accent label="今日新入库" value={o.today_new} sub={`库里共 ${o.total_contents} 条`} />
         <Stat label="博主" value={o.total_authors} sub={`监控中 ${o.monitors} 个`} />
         <Stat label="逐字稿" value={o.transcripts} />
         <Stat label="本月花费" value={`¥${o.month_cny}`} sub={`接口 $${o.month_usd} · 转写 ¥${o.month_asr_cny}`} />
       </div>
 
-      <div className="grid grid-cols-4 gap-3 mt-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
         {quick.map(({ to, icon: Icon, t, d }) => (
           <Link key={to} to={to} className="group rounded-xl border border-line bg-white p-4 flex items-center gap-3 hover:border-ink transition">
             <div className="size-9 rounded-lg bg-paper group-hover:bg-lime flex items-center justify-center transition"><Icon className="size-4" /></div>
@@ -34,8 +34,8 @@ export default function Overview() {
         ))}
       </div>
 
-      <div className="grid grid-cols-5 gap-3 mt-3">
-        <Card className="col-span-3" title="最近任务" extra={<Link to="/jobs" className="text-xs text-mute hover:text-ink">全部 →</Link>} pad={false}>
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mt-3">
+        <Card className="md:col-span-3" title="最近任务" extra={<Link to="/jobs" className="text-xs text-mute hover:text-ink">全部 →</Link>} pad={false}>
           {o.recent_jobs.length === 0 ? <Empty>还没有任务，从上面任意入口开始</Empty> : (
             <div className="divide-y divide-line">
               {o.recent_jobs.map((j: any) => (
@@ -50,7 +50,7 @@ export default function Overview() {
             </div>
           )}
         </Card>
-        <Card className="col-span-2" title="监控动态" extra={<Link to="/monitors" className="text-xs text-mute hover:text-ink">管理 →</Link>} pad={false}>
+        <Card className="md:col-span-2" title="监控动态" extra={<Link to="/monitors" className="text-xs text-mute hover:text-ink">管理 →</Link>} pad={false}>
           {o.monitor_feed.length === 0 ? <Empty>还没有监控运行过</Empty> : (
             <div className="divide-y divide-line">
               {o.monitor_feed.map((m: any) => (
